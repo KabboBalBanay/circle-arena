@@ -1,0 +1,199 @@
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Circle Arena</title>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<style>
+html,body{margin:0;height:100%;background:#111;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none;font-family:system-ui,sans-serif}
+canvas{display:block}
+#menu{position:fixed;inset:0;display:flex;flex-direction:column;gap:8px;align-items:center;justify-content:center;background:#111e;color:#fff}
+#menu h1{margin:0;font-size:26px}
+input,button{font-size:18px;padding:8px 14px;border-radius:8px;border:0}
+button{background:#4ade80;font-weight:600}
+#join{background:#60a5fa}
+#msg{color:#fbbf24;min-height:22px}
+#rot{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:#111;color:#fff;font-size:24px;text-align:center;z-index:9;padding:20px}
+</style></head><body>
+<canvas id="c"></canvas>
+<div id="rot">&#128241; Rotate your phone to landscape</div>
+<div id="menu">
+  <h1 id="mt">Circle Arena</h1>
+  <input id="name" placeholder="Your name" maxlength="12">
+  <button id="host">Host a game</button>
+  <div style="display:flex;gap:8px"><input id="code" placeholder="Room code" maxlength="4" style="width:110px;text-transform:uppercase"><button id="join">Join</button></div>
+  <div id="msg"></div>
+</div>
+<script>
+const cv = document.getElementById('c'), ctx = cv.getContext('2d'), menu = document.getElementById('menu'), msgEl = document.getElementById('msg');
+const ZOOM_VIEW = 750; // bigger = see more of the arena
+const PREFIX = 'circlearena-', W = 1600, H = 1000;
+let vw, vh, dpr;
+function rs(){ dpr = devicePixelRatio || 1; vw = innerWidth; vh = innerHeight; cv.width = vw*dpr; cv.height = vh*dpr;
+  cv.style.width = vw+'px'; cv.style.height = vh+'px'; document.getElementById('rot').style.display = vh > vw ? 'flex' : 'none'; }
+rs(); addEventListener('resize', rs);
+
+let peer, isHost = false, roomCode = '', me = null, S = null, conns = []; const ents = new Map();
+const inp = { mx:0, my:0, ang:0, fire:false };
+const showMsg = t => msgEl.textContent = t;
+function leave(text){ menu.style.display = 'flex'; document.getElementById('mt').textContent = text || 'Circle Arena'; S = null; }
+function tryFullscreen(){ try { const r = document.documentElement.requestFullscreen && document.documentElement.requestFullscreen();
+  Promise.resolve(r).then(() => screen.orientation && screen.orientation.lock && screen.orientation.lock('landscape')).catch(()=>{}); } catch(e){} }
+
+// ---------- state in (same for host and clients) ----------
+function onState(m){
+  S = m;
+  for (const p of m.p) {
+    let d = ents.get(p[0]); if (!d) { d = { x:p[1], y:p[2] }; ents.set(p[0], d); }
+    d.tx = p[1]; d.ty = p[2];
+    if (Math.hypot(d.tx-d.x, d.ty-d.y) > 150) { d.x = d.tx; d.y = d.ty; }
+  }
+}
+
+// ---------- HOST: runs the game ----------
+const R = 18, SPEED = 240, BSPEED = 800, BLIFE = 0.9, DMG = 25, CD = 0.18, MATCH = 300, RESPAWN = 2, OVER = 8;
+const COLORS = ['#f87171','#60a5fa','#4ade80','#facc15','#c084fc','#fb923c','#2dd4bf','#f472b6'];
+let players = new Map(), bullets = [], nextId = 2, phase = 'play', timeLeft = MATCH, overT = 0, last = 0;
+function spawn(p){ p.x = 80 + Math.random()*(W-160); p.y = 80 + Math.random()*(H-160); p.hp = 100; p.dead = false; p.respT = 0; }
+function addPlayer(id, name){ const p = { id, name, color:COLORS[id % COLORS.length], kills:0, deaths:0, ang:0, mx:0, my:0, fire:false, cd:0 }; spawn(p); players.set(id, p); return p; }
+
+function tick(){
+  const now = performance.now(), dt = Math.min(0.1, (now-last)/1000); last = now;
+  const hp = players.get(1); if (hp) { hp.mx = inp.mx; hp.my = inp.my; hp.ang = inp.ang; hp.fire = inp.fire; }
+  if (phase === 'play') {
+    for (const p of players.values()) {
+      if (p.dead) { if ((p.respT -= dt) <= 0) spawn(p); continue; }
+      let mx = p.mx, my = p.my; const l = Math.hypot(mx,my); if (l > 1) { mx /= l; my /= l; }
+      p.x = Math.max(R, Math.min(W-R, p.x + mx*SPEED*dt)); p.y = Math.max(R, Math.min(H-R, p.y + my*SPEED*dt));
+      p.cd -= dt;
+      if (p.fire && p.cd <= 0) { p.cd = CD;
+        bullets.push({ x:p.x+Math.cos(p.ang)*R, y:p.y+Math.sin(p.ang)*R, vx:Math.cos(p.ang)*BSPEED, vy:Math.sin(p.ang)*BSPEED, life:BLIFE, owner:p.id }); }
+    }
+    bullets = bullets.filter(b => {
+      b.x += b.vx*dt; b.y += b.vy*dt;
+      if ((b.life -= dt) <= 0 || b.x < 0 || b.y < 0 || b.x > W || b.y > H) return false;
+      for (const p of players.values()) {
+        if (p.dead || p.id === b.owner) continue;
+        if (Math.hypot(p.x-b.x, p.y-b.y) < R+4) { p.hp -= DMG;
+          if (p.hp <= 0) { p.dead = true; p.respT = RESPAWN; p.deaths++; const k = players.get(b.owner); if (k) k.kills++; }
+          return false; }
+      }
+      return true;
+    });
+    if ((timeLeft -= dt) <= 0) { phase = 'over'; overT = OVER; bullets = []; }
+  } else if ((overT -= dt) <= 0) { phase = 'play'; timeLeft = MATCH; for (const p of players.values()) { p.kills = 0; p.deaths = 0; spawn(p); } }
+
+  const msg = { t:'s', ph:phase, tl:Math.max(0, Math.ceil(phase === 'play' ? timeLeft : overT)),
+    p:[...players.values()].map(p => [p.id, Math.round(p.x), Math.round(p.y), +p.ang.toFixed(2), Math.max(0,p.hp), p.dead?1:0, p.kills, p.deaths, p.name, p.color]),
+    b:bullets.map(b => [Math.round(b.x), Math.round(b.y)]) };
+  onState(msg);
+  for (const c of conns) if (c.open) c.send(msg);
+}
+
+function startHost(name){
+  if (peer) peer.destroy();
+  const code = Array.from({length:4}, () => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[Math.random()*32|0]).join('');
+  peer = new Peer(PREFIX + code);
+  peer.on('open', () => {
+    roomCode = code; isHost = true; me = 1; addPlayer(1, name); menu.style.display = 'none'; last = performance.now();
+    setInterval(tick, 33);
+    try { navigator.wakeLock && navigator.wakeLock.request('screen'); } catch(e){}
+  });
+  peer.on('error', e => { if (e.type === 'unavailable-id') startHost(name); else showMsg('Error: ' + e.type + ' (need internet to start)'); });
+  peer.on('connection', conn => {
+    const id = nextId++, p = addPlayer(id, 'Player'); conns.push(conn);
+    conn.on('open', () => conn.send({ t:'w', id }));
+    conn.on('data', m => {
+      if (m.t === 'join') p.name = String(m.name || 'Player').slice(0, 12);
+      else if (m.t === 'i') { p.mx = +m.mx || 0; p.my = +m.my || 0; p.ang = +m.ang || 0; p.fire = !!m.fire; }
+    });
+    const gone = () => { players.delete(id); conns = conns.filter(c => c !== conn); };
+    conn.on('close', gone); conn.on('error', gone);
+  });
+}
+
+// ---------- CLIENT: joins a host ----------
+function startJoin(name, code){
+  if (peer) peer.destroy();
+  showMsg('Connecting...'); roomCode = code; let opened = false;
+  peer = new Peer();
+  peer.on('error', e => showMsg(e.type === 'peer-unavailable' ? 'Room not found. Check the code.' : 'Error: ' + e.type));
+  peer.on('open', () => {
+    const conn = peer.connect(PREFIX + code, { serialization:'json' });
+    setTimeout(() => { if (!opened) showMsg("Couldn't connect. Check code / internet."); }, 10000);
+    conn.on('open', () => { opened = true; menu.style.display = 'none'; conn.send({ t:'join', name });
+      setInterval(() => { if (conn.open) conn.send({ t:'i', ...inp }); }, 33); });
+    conn.on('data', m => { if (m.t === 'w') me = m.id; else if (m.t === 's') onState(m); });
+    conn.on('close', () => leave('Host left the game'));
+  });
+}
+
+document.getElementById('host').onclick = () => { tryFullscreen(); startHost(document.getElementById('name').value.trim() || 'Player'); };
+document.getElementById('join').onclick = () => {
+  const c = document.getElementById('code').value.trim().toUpperCase(); if (c.length !== 4) return showMsg('Enter the 4-letter room code');
+  tryFullscreen(); startJoin(document.getElementById('name').value.trim() || 'Player', c); };
+
+// ---------- Input: touch sticks (left = move, right = aim+fire) ----------
+const SR = 60, sticks = { l:{id:null,ox:0,oy:0,x:0,y:0}, r:{id:null,ox:0,oy:0,x:0,y:0} };
+cv.addEventListener('touchstart', e => { e.preventDefault();
+  for (const t of e.changedTouches) { const s = sticks[t.clientX < vw/2 ? 'l' : 'r'];
+    if (s.id === null) { s.id = t.identifier; s.ox = s.x = t.clientX; s.oy = s.y = t.clientY; } } }, { passive:false });
+cv.addEventListener('touchmove', e => { e.preventDefault();
+  for (const t of e.changedTouches) for (const k in sticks) if (sticks[k].id === t.identifier) { sticks[k].x = t.clientX; sticks[k].y = t.clientY; } }, { passive:false });
+const tend = e => { for (const t of e.changedTouches) for (const k in sticks) if (sticks[k].id === t.identifier) sticks[k].id = null; };
+cv.addEventListener('touchend', tend); cv.addEventListener('touchcancel', tend);
+function vec(s){ let dx = s.x-s.ox, dy = s.y-s.oy; const l = Math.hypot(dx,dy); if (l > SR) { dx = dx/l*SR; dy = dy/l*SR; } return { x:dx/SR, y:dy/SR, m:Math.min(1,l/SR) }; }
+const keys = {}; let mouse = { x:0, y:0, down:false };
+addEventListener('keydown', e => keys[e.key.toLowerCase()] = true); addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+addEventListener('mousedown', () => mouse.down = true); addEventListener('mouseup', () => mouse.down = false);
+function readInput(){
+  if (sticks.l.id !== null || sticks.r.id !== null) {
+    const l = vec(sticks.l), r = vec(sticks.r);
+    inp.mx = sticks.l.id !== null ? l.x : 0; inp.my = sticks.l.id !== null ? l.y : 0;
+    if (sticks.r.id !== null && r.m > 0.2) { inp.ang = Math.atan2(r.y, r.x); inp.fire = true; } else inp.fire = false;
+  } else { inp.mx = (keys.d?1:0) - (keys.a?1:0); inp.my = (keys.s?1:0) - (keys.w?1:0);
+    inp.ang = Math.atan2(mouse.y - vh/2, mouse.x - vw/2); inp.fire = mouse.down; }
+}
+
+// ---------- Render ----------
+function draw(){
+  requestAnimationFrame(draw); readInput();
+  ctx.setTransform(dpr,0,0,dpr,0,0); ctx.fillStyle = '#0b0b10'; ctx.fillRect(0,0,vw,vh);
+  if (!S) return;
+  for (const d of ents.values()) { d.x += (d.tx-d.x)*0.4; d.y += (d.ty-d.y)*0.4; }
+  const self = ents.get(me) || { x:W/2, y:H/2 }, z = Math.min(vw,vh)/ZOOM_VIEW;
+  ctx.save(); ctx.translate(vw/2, vh/2); ctx.scale(z,z); ctx.translate(-self.x, -self.y);
+  ctx.fillStyle = '#1a1a22'; ctx.fillRect(0,0,W,H); ctx.strokeStyle = '#ffffff10'; ctx.lineWidth = 1; ctx.beginPath();
+  for (let x=0;x<=W;x+=100){ ctx.moveTo(x,0); ctx.lineTo(x,H); } for (let y=0;y<=H;y+=100){ ctx.moveTo(0,y); ctx.lineTo(W,y); }
+  ctx.stroke(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.strokeRect(0,0,W,H);
+  ctx.fillStyle = '#fde047'; for (const b of S.b) { ctx.beginPath(); ctx.arc(b[0], b[1], 4, 0, 7); ctx.fill(); }
+  for (const p of S.p) {
+    if (p[5]) continue; const d = ents.get(p[0]);
+    ctx.fillStyle = p[9]; ctx.beginPath(); ctx.arc(d.x, d.y, 18, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(d.x, d.y); ctx.lineTo(d.x+Math.cos(p[3])*28, d.y+Math.sin(p[3])*28); ctx.stroke();
+    if (p[0] === me) { ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(d.x, d.y, 22, 0, 7); ctx.stroke(); }
+    ctx.fillStyle = '#400'; ctx.fillRect(d.x-20, d.y-34, 40, 5); ctx.fillStyle = '#4ade80'; ctx.fillRect(d.x-20, d.y-34, 40*p[4]/100, 5);
+    ctx.fillStyle = '#fff'; ctx.font = '12px system-ui'; ctx.textAlign = 'center'; ctx.fillText(p[8], d.x, d.y-40);
+  }
+  ctx.restore();
+  const sorted = [...S.p].sort((a,b) => b[6]-a[6]);
+  ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = 'bold 28px system-ui'; const t = S.tl;
+  ctx.fillText(Math.floor(t/60) + ':' + String(t%60).padStart(2,'0'), vw/2, 36);
+  ctx.textAlign = 'left'; ctx.font = 'bold 16px system-ui'; ctx.fillText('Room: ' + roomCode, 12, 24);
+  if (isHost) { ctx.font = '12px system-ui'; ctx.fillStyle = '#fbbf24'; ctx.fillText('You are host: keep this screen open', 12, 42); }
+  ctx.textAlign = 'right'; ctx.font = '14px system-ui';
+  sorted.slice(0,5).forEach((p,i) => { ctx.fillStyle = p[0]===me ? '#4ade80' : '#fff'; ctx.fillText(`${p[8]}  ${p[6]}K / ${p[7]}D`, vw-12, 24+i*18); });
+  const mp = S.p.find(p => p[0] === me);
+  if (mp && mp[5]) { ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = 'bold 32px system-ui'; ctx.fillText('You died... respawning', vw/2, vh/2); }
+  for (const k in sticks) { const s = sticks[k]; if (s.id === null) continue; const v = vec(s);
+    ctx.strokeStyle = '#fff6'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(s.ox, s.oy, SR, 0, 7); ctx.stroke();
+    ctx.fillStyle = '#fff6'; ctx.beginPath(); ctx.arc(s.ox+v.x*SR, s.oy+v.y*SR, 24, 0, 7); ctx.fill(); }
+  if (S.ph === 'over') {
+    ctx.fillStyle = '#000c'; ctx.fillRect(0,0,vw,vh); ctx.fillStyle = '#fff'; ctx.textAlign = 'center';
+    ctx.font = 'bold 40px system-ui'; ctx.fillText(sorted.length ? sorted[0][8] + ' wins!' : 'Match over', vw/2, vh/2-60); ctx.font = '20px system-ui';
+    sorted.slice(0,6).forEach((p,i) => ctx.fillText(`${i+1}. ${p[8]} — ${p[6]} kills`, vw/2, vh/2-15+i*28));
+    ctx.fillText('Next match in ' + S.tl + 's', vw/2, vh/2+190);
+  }
+}
+draw();
+</script></body></html>
