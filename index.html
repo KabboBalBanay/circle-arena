@@ -51,7 +51,7 @@ function onState(m){
 
 // ---------- HOST: runs the game ----------
 const R = 18, SPEED = 240, BSPEED = 800, BLIFE = 1.0, DMG = 25, CD = 0.18, MATCH = 300, RESPAWN = 2, OVER = 8;
-const CS = 200, T = 20, KILL_PTS = 3, CROWN_SLOW = 0.8; // CS = cell size, T = wall thickness
+const CS = 200, T = 20, KILL_PTS = 3, CROWN_SLOW = 0.8, DROP_CAP = 10; // CS = cell size, T = wall thickness
 const COLORS = ['#f87171','#60a5fa','#4ade80','#facc15','#c084fc','#fb923c','#2dd4bf','#f472b6'];
 let players = new Map(), bullets = [], nextId = 2, phase = 'play', timeLeft = MATCH, overT = 0, last = 0;
 let MZ = { seed:-1, cols:0, rows:0 }, rects = [], gems = [], crown = { x:0, y:0, h:0 }, crownS = null, gemDirty = true, gemT = 0, tickN = 0, maxP = 4;
@@ -88,7 +88,7 @@ function pushOut(p){
 }
 function hitWall(x, y){ for (const r of rects) if (x >= r.x-3 && x <= r.x+r.w+3 && y >= r.y-3 && y <= r.y+r.h+3) return true; return false; }
 function cellPos(){ return [(Math.random()*MZ.cols|0)*CS + CS/2, (Math.random()*MZ.rows|0)*CS + CS/2]; }
-function addGem(v, x, y){ if (x === undefined) [x,y] = cellPos(); gems.push([Math.round(x), Math.round(y), v]); gemDirty = true; }
+function addGem(v, x, y, dropped){ if (x === undefined) [x,y] = cellPos(); gems.push([Math.round(x), Math.round(y), v, dropped ? 1 : 0]); gemDirty = true; }
 function newRound(){
   const cols = 6 + 2*maxP; buildMaze((Math.random()*1e9)|0, cols, Math.round(cols*0.7));
   gems = []; for (let i = 0, n = Math.floor(MZ.cols*MZ.rows/4); i < n; i++) addGem(1);
@@ -105,7 +105,7 @@ function addPlayer(id, name){ const p = { id, name, color:COLORS[id % COLORS.len
 function kill(p, ownerId){
   p.dead = true; p.respT = RESPAWN; p.deaths++;
   const k = players.get(ownerId); if (k) { k.kills++; k.score += KILL_PTS; }
-  const lose = Math.floor(p.score/2); if (lose > 0) { p.score -= lose; addGem(lose, p.x, p.y); } // dead player drops half their points
+  const lose = Math.min(DROP_CAP, Math.floor(p.score/2)); if (lose > 0) { p.score -= lose; addGem(lose, p.x, p.y, true); } // dead player drops half their points
   if (crown.h === p.id) { crown.h = 0; crown.x = p.x; crown.y = p.y; }
 }
 
@@ -119,7 +119,7 @@ function tick(){
       const sp = crown.h === p.id ? SPEED*CROWN_SLOW : SPEED;
       p.x = Math.max(R, Math.min(W-R, p.x + mx*sp*dt)); p.y = Math.max(R, Math.min(H-R, p.y + my*sp*dt)); pushOut(p);
       for (let i = gems.length-1; i >= 0; i--) { const g = gems[i];
-        if (Math.hypot(g[0]-p.x, g[1]-p.y) < R+10) { p.score += g[2] * (crown.h === p.id ? 2 : 1); gems.splice(i,1); gemDirty = true; } }
+        if (Math.hypot(g[0]-p.x, g[1]-p.y) < R+10) { p.score += g[2] * (crown.h === p.id && !g[3] ? 2 : 1); gems.splice(i,1); gemDirty = true; } }
       if (!crown.h && Math.hypot(crown.x-p.x, crown.y-p.y) < R+14) crown.h = p.id;
       if (crown.h === p.id) { p.score += dt; crown.x = p.x; crown.y = p.y; }
       p.cd -= dt;
