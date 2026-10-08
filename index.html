@@ -51,7 +51,7 @@ function onState(m){
 
 // ---------- HOST: runs the game ----------
 const R = 18, SPEED = 240, BSPEED = 800, BLIFE = 1.0, DMG = 25, CD = 0.18, MATCH = 300, RESPAWN = 2, OVER = 8;
-const CS = 200, T = 20, KILL_PTS = 3, CROWN_SLOW = 0.8, DROP_CAP = 10; // CS = cell size, T = wall thickness
+const CS = 200, T = 20, KILL_PTS = 3, CROWN_SLOW = 0.8; // CS = cell size, T = wall thickness
 const COLORS = ['#f87171','#60a5fa','#4ade80','#facc15','#c084fc','#fb923c','#2dd4bf','#f472b6'];
 let players = new Map(), bullets = [], nextId = 2, phase = 'play', timeLeft = MATCH, overT = 0, last = 0;
 let MZ = { seed:-1, cols:0, rows:0 }, rects = [], gems = [], crown = { x:0, y:0, h:0 }, crownS = null, gemDirty = true, gemT = 0, tickN = 0, maxP = 4;
@@ -105,7 +105,7 @@ function addPlayer(id, name){ const p = { id, name, color:COLORS[id % COLORS.len
 function kill(p, ownerId){
   p.dead = true; p.respT = RESPAWN; p.deaths++;
   const k = players.get(ownerId); if (k) { k.kills++; k.score += KILL_PTS; }
-  const lose = Math.min(DROP_CAP, Math.floor(p.score/2)); if (lose > 0) { p.score -= lose; addGem(lose, p.x, p.y, true); } // dead player drops half their points
+  const lose = Math.ceil(Math.floor(p.score)/2); if (lose > 0) { p.score -= lose; addGem(lose, p.x, p.y, true); } // dead player drops half their points
   if (crown.h === p.id) { crown.h = 0; crown.x = p.x; crown.y = p.y; }
 }
 
